@@ -48,12 +48,21 @@ class TaskHandler:
         ("电量", "handle_battery"),
         ("网络", "handle_network"),
         ("截屏", "handle_screenshot"),
+        ("关电脑", "handle_shutdown"),
+        ("关闭电脑", "handle_shutdown"),
+        ("关掉电脑", "handle_shutdown"),
         ("关机", "handle_shutdown"),
+        ("确认关机", "handle_shutdown_confirm"),
+        ("确认重启", "handle_restart_confirm"),
+        ("重启电脑", "handle_restart"),
+        ("重新启动", "handle_restart"),
         ("重启", "handle_restart"),
         ("取消关机", "handle_cancel_shutdown"),
+        ("取消重启", "handle_cancel_shutdown"),
         ("清理内存", "handle_clean_memory"),
         ("结束进程", "handle_kill_process"),
         ("休眠电脑", "handle_pc_sleep"),
+        ("电脑休眠", "handle_pc_sleep"),
         ("睡眠", "handle_sleep_pc"),
         ("打开", "handle_open_app"),
         ("启动", "handle_open_app"),
@@ -221,12 +230,32 @@ class TaskHandler:
             return "截图功能需要安装 pyautogui。"
 
     def handle_shutdown(self, text: str) -> str:
-        return "确定要关机吗？确认的话请说「确认关机」。（安全确认）"
+        """关机: 直接执行，60秒倒计时，可取消"""
+        if "确认" in text:
+            return self.handle_shutdown_confirm(text)
+        result = self.monitor.shutdown()
+        return f"电脑将在1分钟后关机。说「取消关机」可以撤销。"
+
+    def handle_shutdown_confirm(self, text: str) -> str:
+        """确认关机"""
+        result = self.monitor.shutdown()
+        return f"好的，电脑将在1分钟后关机。说「取消关机」可以撤销。"
+
+    def handle_restart(self, text: str) -> str:
+        """重启: 直接执行，60秒倒计时，可取消"""
+        if "确认" in text:
+            return self.handle_restart_confirm(text)
+        result = self.monitor.restart()
+        return "电脑将在1分钟后重启。说「取消关机」可以撤销。"
+
+    def handle_restart_confirm(self, text: str) -> str:
+        """确认重启"""
+        result = self.monitor.restart()
+        return "好的，电脑将在1分钟后重启。说「取消关机」可以撤销。"
 
     def handle_sleep_pc(self, text: str) -> str:
-        if "电脑" in text or "pc" in text.lower():
-            return "好的，让电脑休息一下。"
-        return "你是说让电脑睡眠，还是让自己休息？早点睡哦。"
+        """电脑休眠: 直接执行"""
+        return self.monitor.sleep()
 
     # ====== 系统监控 ======
 
@@ -251,11 +280,6 @@ class TaskHandler:
 
     def handle_network(self, text: str) -> str:
         return self.monitor.get_network_status()
-
-    def handle_restart(self, text: str) -> str:
-        if "确认" in text:
-            return self.monitor.restart()
-        return "确定要重启电脑吗？确认的话请说「确认重启」。(1分钟后执行)"
 
     def handle_cancel_shutdown(self, text: str) -> str:
         return self.monitor.cancel_shutdown()
