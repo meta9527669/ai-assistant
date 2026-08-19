@@ -62,3 +62,8 @@ DEFAULT_CITY = "北京"
 # 提醒检查间隔（秒）
 REMINDER_CHECK_INTERVAL = 30
 
+# ============ Web 字幕 & 手机控制 ============
+WEB_ENABLED = True                  # 启用 Web 字幕服务
+WEB_PORT = 5000                     # Web 服务端口
+WEB_AUTO_OPEN_SUBTITLE = True       # 自动在浏览器打开字幕浮窗
+

@@ -20,12 +20,17 @@ import config
 class TaskHandler:
     """处理用户的基础事务指令"""
 
-    # 指令关键词 -> 处理方法的映射
+    # 指令关键词 -> 处理方法的映射（按优先级排序，越具体越靠前）
     COMMAND_MAP = [
-        ("时间", "handle_time"),
         ("几点", "handle_time"),
+        ("时间", "handle_time"),
+        ("今天几号", "handle_date"),
+        ("今天星期", "handle_date"),
+        ("今天日期", "handle_date"),
+        ("几号", "handle_date"),
+        ("星期几", "handle_date"),
+        ("周几", "handle_date"),
         ("日期", "handle_date"),
-        ("今天", "handle_date"),
         ("天气", "handle_weather"),
         ("打开", "handle_open_app"),
         ("启动", "handle_open_app"),
