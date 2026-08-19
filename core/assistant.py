@@ -28,6 +28,8 @@ class Assistant:
 
         self.running = False
         self._reminder_thread: threading.Thread | None = None
+        self._monitor_thread: threading.Thread | None = None
+        self._wechat_interface = None
 
         self.subtitle: SubtitleServer | None = None
         self.mobile_queue: queue.Queue = queue.Queue()
@@ -136,6 +138,8 @@ class Assistant:
         mode_desc = "聊天模式（文件传输助手）" if chat_mode else "自动回复模式"
         print(f"启动微信{mode_desc}...")
         wechat = WeChatInterface(self, chat_mode=chat_mode)
+        self._wechat_interface = wechat
+        self._start_system_monitor()
         wechat.start()
 
     def run_qq_only(self):
@@ -181,6 +185,28 @@ class Assistant:
                     print(f"[提醒] {reminder}")
                     self._say(reminder, "voice" if self.voice else "text")
                 time.sleep(config.REMINDER_CHECK_INTERVAL)
+
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+
+    def _start_system_monitor(self):
+        """启动系统监控线程：定时检查电脑状态，异常时通知"""
+        def loop():
+            time.sleep(30)  # 启动后等30秒再开始监控
+            while self.running:
+                try:
+                    alert = self.tasks.monitor.check_alerts()
+                    if alert:
+                        print(f"[监控] {alert}", flush=True)
+                        self.memory.save_note(f"[系统告警] {alert}")
+                        # 通过微信推送告警
+                        if self._wechat_interface:
+                            self._wechat_interface._send_message(alert)
+                        elif self.subtitle:
+                            self.subtitle.push_assistant(alert)
+                except Exception as e:
+                    print(f"[监控错误] {e}", flush=True)
+                time.sleep(300)  # 每5分钟检查一次
 
         t = threading.Thread(target=loop, daemon=True)
         t.start()

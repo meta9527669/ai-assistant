@@ -15,6 +15,7 @@ except ImportError:
     requests = None
 
 import config
+from core.monitor import SystemMonitor
 
 
 class TaskHandler:
@@ -32,6 +33,28 @@ class TaskHandler:
         ("周几", "handle_date"),
         ("日期", "handle_date"),
         ("天气", "handle_weather"),
+        ("电脑状态", "handle_system_status"),
+        ("系统状态", "handle_system_status"),
+        ("电脑怎么样", "handle_system_status"),
+        ("cpu", "handle_cpu"),
+        ("处理器", "handle_cpu"),
+        ("内存", "handle_memory"),
+        ("磁盘", "handle_disk"),
+        ("硬盘", "handle_disk"),
+        ("运行的程序", "handle_processes"),
+        ("进程", "handle_processes"),
+        ("运行什么", "handle_processes"),
+        ("电池", "handle_battery"),
+        ("电量", "handle_battery"),
+        ("网络", "handle_network"),
+        ("截屏", "handle_screenshot"),
+        ("关机", "handle_shutdown"),
+        ("重启", "handle_restart"),
+        ("取消关机", "handle_cancel_shutdown"),
+        ("清理内存", "handle_clean_memory"),
+        ("结束进程", "handle_kill_process"),
+        ("休眠电脑", "handle_pc_sleep"),
+        ("睡眠", "handle_sleep_pc"),
         ("打开", "handle_open_app"),
         ("启动", "handle_open_app"),
         ("搜索", "handle_search"),
@@ -44,13 +67,12 @@ class TaskHandler:
         ("音量", "handle_volume"),
         ("静音", "handle_mute"),
         ("截图", "handle_screenshot"),
-        ("关机", "handle_shutdown"),
-        ("睡眠", "handle_sleep_pc"),
     ]
 
     def __init__(self, memory):
         self.memory = memory
         self.reminders: list[dict] = []
+        self.monitor = SystemMonitor()
 
     def try_handle(self, text: str) -> str | None:
         """
@@ -205,6 +227,52 @@ class TaskHandler:
         if "电脑" in text or "pc" in text.lower():
             return "好的，让电脑休息一下。"
         return "你是说让电脑睡眠，还是让自己休息？早点睡哦。"
+
+    # ====== 系统监控 ======
+
+    def handle_system_status(self, text: str) -> str:
+        return self.monitor.get_system_status()
+
+    def handle_cpu(self, text: str) -> str:
+        return f"CPU使用率: {self.monitor.get_cpu_usage()}"
+
+    def handle_memory(self, text: str) -> str:
+        return f"内存: {self.monitor.get_memory_usage()}"
+
+    def handle_disk(self, text: str) -> str:
+        return self.monitor.get_disk_usage()
+
+    def handle_processes(self, text: str) -> str:
+        return self.monitor.get_running_processes()
+
+    def handle_battery(self, text: str) -> str:
+        result = self.monitor.get_battery_status()
+        return f"电池: {result}" if result else "没有检测到电池（可能是台式机）。"
+
+    def handle_network(self, text: str) -> str:
+        return self.monitor.get_network_status()
+
+    def handle_restart(self, text: str) -> str:
+        if "确认" in text:
+            return self.monitor.restart()
+        return "确定要重启电脑吗？确认的话请说「确认重启」。(1分钟后执行)"
+
+    def handle_cancel_shutdown(self, text: str) -> str:
+        return self.monitor.cancel_shutdown()
+
+    def handle_clean_memory(self, text: str) -> str:
+        return self.monitor.clean_memory()
+
+    def handle_kill_process(self, text: str) -> str:
+        import re
+        match = re.search(r"结束(?:进程)?(.+)", text)
+        name = match.group(1).strip() if match else ""
+        if not name:
+            return "要结束哪个进程？比如「结束进程 chrome」"
+        return self.monitor.kill_process(name)
+
+    def handle_pc_sleep(self, text: str) -> str:
+        return self.monitor.sleep()
 
     def check_reminders(self) -> str | None:
         """检查是否有到期的提醒"""
