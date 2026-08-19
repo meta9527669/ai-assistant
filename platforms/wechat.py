@@ -1,9 +1,14 @@
 """
-微信自动化模块 - 通过 UI 自动化监听和回复微信消息
+微信自动化模块 - 通过 UI 自动化将李亦禾接入微信
 
-功能：
-  1. 桌面端：自动监听微信消息，AI 自动回复
-  2. 手机端：通过 Web 服务器推送新消息到手机，手机可查看和手动回复
+两种模式：
+  1. 聊天模式 (chat_mode=True)
+     - 用户在微信「文件传输助手」中与李亦禾对话
+     - 所有消息走完整助手管线（事务指令 + LLM 对话 + 记忆）
+     - 字幕浮窗和手机网页同步显示对话
+
+  2. 自动回复模式 (chat_mode=False)
+     - 监听所有联系人消息，关键词触发自动回复
 
 注意：需要先在电脑上登录微信桌面版。
 """
@@ -12,7 +17,6 @@ import time
 import threading
 import subprocess
 import os
-import queue
 
 import config
 
@@ -29,125 +33,293 @@ except ImportError:
     uia = None
 
 
-class WeChatBot:
-    """微信消息自动化处理 - 桌面 + 手机联动"""
+class WeChatInterface:
+    """微信交互接口 - 让李亦禾在微信中工作"""
 
-    def __init__(self, brain, memory, subtitle_server=None):
-        self.brain = brain
-        self.memory = memory
-        self.subtitle = subtitle_server
+    def __init__(self, assistant, chat_mode=True):
+        self.assistant = assistant
+        self.chat_mode = chat_mode
         self.running = False
+        self.target_chat = config.WECHAT_CHAT_TARGET
+        self._last_msg_text = ""
+        self._wechat_window = None
         self._checked_messages: set = set()
-        self.auto_reply = config.WECHAT_AUTO_REPLY_ENABLED
-        self.wechat_messages: list[dict] = []  # 微信消息列表
-        self.max_messages = 100
-        self._send_queue: queue.Queue = queue.Queue()  # 手机发来的待发送消息
 
-    def push_wechat_msg(self, contact: str, message: str, direction: str = "in"):
-        """推送微信消息到手机和本地列表"""
-        msg = {
-            "contact": contact,
-            "message": message,
-            "direction": direction,
-            "timestamp": time.strftime("%H:%M:%S"),
-        }
-        self.wechat_messages.append(msg)
-        if len(self.wechat_messages) > self.max_messages:
-            self.wechat_messages = self.wechat_messages[-self.max_messages:]
+    def start(self):
+        """启动微信交互"""
+        self._ensure_wechat_open()
 
-        if self.subtitle:
-            if direction == "in":
-                self.subtitle.push("wechat", f"[微信] {contact}: {message}")
-            else:
-                self.subtitle.push("wechat", f"[回复] -> {contact}: {message}")
-
-    def get_messages(self) -> list[dict]:
-        """获取微信消息列表"""
-        return self.wechat_messages
-
-    def queue_send(self, contact: str, message: str):
-        """手机请求发送微信消息（加入队列，由桌面端执行）"""
-        self._send_queue.put((contact, message))
-
-    def toggle_auto_reply(self, enabled: bool = None):
-        """开关自动回复"""
-        if enabled is not None:
-            self.auto_reply = enabled
+        if self.chat_mode:
+            self._start_chat_mode()
         else:
-            self.auto_reply = not self.auto_reply
-        return self.auto_reply
+            self._start_auto_reply_mode()
 
-    def ensure_wechat_open(self):
-        """确保微信已打开"""
-        try:
-            subprocess.Popen(["start", "WeChat"], shell=True)
-            time.sleep(3)
-        except Exception:
-            pass
-
-    def start_listening(self):
-        """启动消息监听循环"""
-        self.ensure_wechat_open()
-        self.running = True
-        print("微信监听已启动，等待消息中...")
-
-        if self.subtitle:
-            self.subtitle.push_status("微信监听已启动")
-
-        # Start send queue processor thread
-        send_thread = threading.Thread(target=self._process_send_queue, daemon=True)
-        send_thread.start()
+    def _ensure_wechat_open(self):
+        """确保微信桌面版已打开并登录"""
+        print("[微信] 正在检测微信桌面版...")
 
         if uia:
-            self._listen_with_uia()
-        elif pyautogui:
-            self._listen_with_pyautogui()
-        else:
-            print("需要安装 pyautogui 或 uiautomation: pip install pyautogui uiautomation")
-            if self.subtitle:
-                self.subtitle.push_status("微信模块需要 pyautogui/uiautomation")
+            wechat = uia.WindowControl(ClassName="WeChatMainWndForPC")
+            if wechat.Exists():
+                print("[微信] 已检测到微信窗口")
+                wechat.SetTopmost(True)
+                time.sleep(0.5)
+                wechat.SetTopmost(False)
+                return
 
-    def _process_send_queue(self):
-        """处理手机发来的待发送消息"""
+        print("[微信] 未检测到微信，尝试启动...")
+        try:
+            wechat_path = r"C:\Program Files\Tencent\WeChat\WeChat.exe"
+            if os.path.exists(wechat_path):
+                subprocess.Popen([wechat_path])
+            else:
+                subprocess.Popen("start WeChat", shell=True)
+            time.sleep(5)
+
+            if uia:
+                wechat = uia.WindowControl(ClassName="WeChatMainWndForPC")
+                if wechat.Exists():
+                    print("[微信] 微信已启动")
+                    return
+        except Exception as e:
+            print(f"[微信] 启动失败: {e}")
+
+        print("[微信] 请手动打开并登录微信桌面版，然后重试。")
+
+    # ==================== 聊天模式 ====================
+
+    def _start_chat_mode(self):
+        """聊天模式：通过文件传输助手与李亦禾对话"""
+        if not uia:
+            print("[微信] 需要 uiautomation 库: pip install uiautomation")
+            return
+
+        if not self._open_target_chat():
+            return
+
+        self.running = True
+        greeting = f"你好主人，我是{config.ASSISTANT_NAME}，微信已连接。有什么我能帮忙的吗？"
+        self._send_message(greeting)
+        self.assistant.memory.save_conversation("assistant", greeting, source="wechat")
+        if self.assistant.subtitle:
+            self.assistant.subtitle.push_assistant(greeting)
+
+        print(f"\n[微信] 李亦禾已接入微信（{self.target_chat}）")
+        print("[微信] 在微信中给文件传输助手发消息即可与李亦禾对话")
+        print("[微信] 按 Ctrl+C 退出\n")
+
+        self._start_reminder_forward()
+
         while self.running:
             try:
-                contact, message = self._send_queue.get(timeout=1)
-                self._send_message_to_contact(contact, message)
-            except queue.Empty:
-                continue
+                new_msg = self._check_new_message()
+                if new_msg:
+                    self._process_chat_message(new_msg)
+                time.sleep(2)
+            except KeyboardInterrupt:
+                farewell = "主人，我要先休息了。微信随时找我哦~"
+                self._send_message(farewell)
+                self.running = False
             except Exception as e:
-                print(f"[发送队列错误] {e}")
+                print(f"[微信监听错误] {e}")
+                time.sleep(5)
 
-    def _listen_with_uia(self):
-        """使用 uiautomation 库监听微信消息"""
+    def _open_target_chat(self) -> bool:
+        """打开目标聊天窗口（文件传输助手）"""
+        try:
+            wechat = uia.WindowControl(ClassName="WeChatMainWndForPC")
+            if not wechat.Exists(3, 1):
+                print("[微信] 未找到微信窗口")
+                return False
+
+            self._wechat_window = wechat
+            wechat.SetTopmost(True)
+            time.sleep(0.5)
+
+            search_box = wechat.EditControl(Name="搜索")
+            if search_box.Exists(1):
+                search_box.Click()
+                time.sleep(0.3)
+                pyperclip.copy(self.target_chat)
+                pyautogui.hotkey("ctrl", "v")
+                time.sleep(0.8)
+                pyautogui.press("enter")
+                time.sleep(1.5)
+                print(f"[微信] 已打开聊天: {self.target_chat}")
+            else:
+                print("[微信] 未找到搜索框，请手动打开文件传输助手")
+                return False
+
+            self._last_msg_text = self._get_last_message()
+            wechat.SetTopmost(False)
+            return True
+        except Exception as e:
+            print(f"[微信] 打开聊天失败: {e}")
+            return False
+
+    def _get_last_message(self) -> str:
+        """获取聊天窗口最后一条消息文本"""
+        try:
+            if not self._wechat_window:
+                return ""
+
+            msg_list = self._wechat_window.ListControl(Name="消息")
+            if not msg_list.Exists(0.5):
+                msg_list = self._wechat_window.ListControl(SubName="消息")
+            if not msg_list.Exists(0.5):
+                return ""
+
+            children = msg_list.GetChildren()
+            last_text = ""
+            for child in children:
+                texts = child.GetChildren()
+                for t in texts:
+                    if t.ControlType == uia.ControlType.TextControl:
+                        val = t.Name
+                        if val and len(val) > 1 and val != "[文件]" and val != "[图片]":
+                            last_text = val
+
+            if not last_text:
+                last_msg_item = msg_list.GetChildren()[-1] if msg_list.GetChildren() else None
+                if last_msg_item:
+                    text_ctrl = last_msg_item.TextControl(foundIndex=1)
+                    if text_ctrl.Exists(0.3):
+                        last_text = text_ctrl.Name
+
+            return last_text
+        except Exception:
+            return ""
+
+    def _check_new_message(self) -> str | None:
+        """检查是否有新消息（与上次不同且不是自己发的）"""
+        try:
+            current = self._get_last_message()
+            if not current:
+                return None
+            if current == self._last_msg_text:
+                return None
+            if current == self._pending_reply:
+                self._last_msg_text = current
+                self._pending_reply = ""
+                return None
+
+            new_msg = current
+            self._last_msg_text = current
+            return new_msg
+        except Exception:
+            return None
+
+    _pending_reply = ""
+
+    def _process_chat_message(self, text: str):
+        """处理微信消息：走完整助手管线"""
+        print(f"[微信] 你: {text}")
+        if self.assistant.subtitle:
+            self.assistant.subtitle.push_user(text)
+
+        self.assistant.memory.save_conversation("user", text, source="wechat")
+
+        if text in ("退出", "quit", "exit", "再见"):
+            reply = "好的主人，我去休息了，微信随时找我哦~"
+            self._send_and_record(reply)
+            self.running = False
+            return
+
+        if self.assistant.subtitle:
+            self.assistant.subtitle.push_status("思考中...")
+
+        reply = self.assistant.tasks.try_handle(text)
+        if reply is None:
+            reply = self.assistant.brain.chat(text)
+
+        self._send_and_record(reply)
+
+    def _send_and_record(self, reply: str):
+        """发送回复并记录"""
+        self.assistant.memory.save_conversation("assistant", reply, source="wechat")
+        if self.assistant.subtitle:
+            self.assistant.subtitle.push_assistant(reply)
+        print(f"[微信] 李亦禾: {reply}")
+        self._send_message(reply)
+
+    def _send_message(self, text: str):
+        """在当前聊天窗口发送消息"""
+        if not self._wechat_window:
+            return
+        try:
+            self._wechat_window.SetTopmost(True)
+            time.sleep(0.2)
+
+            edit_box = self._wechat_window.EditControl(Name="输入信息")
+            if not edit_box.Exists(0.5):
+                edit_box = self._wechat_window.EditControl(foundIndex=1)
+
+            if edit_box.Exists(0.5):
+                edit_box.Click()
+                time.sleep(0.2)
+                pyperclip.copy(text)
+                pyautogui.hotkey("ctrl", "v")
+                time.sleep(0.3)
+                pyautogui.press("enter")
+                self._pending_reply = text
+                time.sleep(0.5)
+
+            self._wechat_window.SetTopmost(False)
+        except Exception as e:
+            print(f"[微信] 发送失败: {e}")
+
+    def _start_reminder_forward(self):
+        """启动提醒转发线程"""
+        def loop():
+            while self.running:
+                try:
+                    reminder = self.assistant.tasks.check_reminders()
+                    if reminder:
+                        print(f"[提醒] {reminder}")
+                        self._send_message(reminder)
+                        if self.assistant.subtitle:
+                            self.assistant.subtitle.push_assistant(f"[提醒] {reminder}")
+                    time.sleep(config.REMINDER_CHECK_INTERVAL)
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+
+    # ==================== 自动回复模式 ====================
+
+    def _start_auto_reply_mode(self):
+        """自动回复模式：监听所有联系人，关键词触发回复"""
+        self.running = True
+        print("[微信] 自动回复模式已启动，等待消息中...")
+        print("[微信] 按 Ctrl+C 退出")
+
         while self.running:
             try:
-                wechat = uia.WindowControl(Name="微信", ClassName="WeChatMainWndForPC")
-                if not wechat.Exists():
-                    print("未检测到微信窗口，请确保已登录微信桌面版。")
-                    if self.subtitle:
-                        self.subtitle.push_status("未检测到微信窗口，请登录微信桌面版")
+                wechat = uia.WindowControl(ClassName="WeChatMainWndForPC")
+                if not wechat.Exists(3, 1):
+                    print("[微信] 未检测到微信窗口")
                     time.sleep(10)
                     continue
 
                 wechat.SetTopmost(True)
-                time.sleep(0.5)
+                time.sleep(0.3)
                 wechat.SetTopmost(False)
 
                 list_ctrl = wechat.ListControl(Name="会话")
-                if not list_ctrl.Exists():
+                if not list_ctrl.Exists(0.5):
                     time.sleep(5)
                     continue
 
                 for item in list_ctrl.GetChildren():
                     try:
                         name = item.Name
-                        if not name:
+                        if not name or name == self.target_chat:
                             continue
 
                         last_msg = ""
                         msg_item = item.TextControl(foundIndex=2)
-                        if msg_item.Exists():
+                        if msg_item.Exists(0.3):
                             last_msg = msg_item.Name
 
                         if not last_msg or last_msg == "[未读消息]":
@@ -161,11 +333,11 @@ class WeChatBot:
                         if len(self._checked_messages) > 200:
                             self._checked_messages = set(list(self._checked_messages)[-100:])
 
-                        # Push to mobile
-                        self.push_wechat_msg(name, last_msg, "in")
+                        if not self._should_reply(last_msg):
+                            continue
 
-                        if self.auto_reply and self._should_reply(last_msg):
-                            self._reply_to_contact(wechat, name, last_msg)
+                        print(f"[微信] {name}: {last_msg}")
+                        self._reply_to_contact(wechat, name, last_msg)
                     except Exception:
                         continue
 
@@ -176,27 +348,8 @@ class WeChatBot:
                 print(f"[微信监听错误] {e}")
                 time.sleep(5)
 
-    def _listen_with_pyautogui(self):
-        """使用 pyautogui 的简化监听方案"""
-        print("使用 pyautogui 模式（简化版），建议安装 uiautomation 以获得更好体验。")
-        while self.running:
-            try:
-                time.sleep(5)
-                if not self._send_queue.empty():
-                    contact, message = self._send_queue.get_nowait()
-                    print(f"[待发送] {contact}: {message}")
-                    print("请在微信中手动粘贴发送。")
-                    if pyperclip:
-                        pyperclip.copy(message)
-                    self.push_wechat_msg(contact, message, "out")
-            except KeyboardInterrupt:
-                self.running = False
-            except Exception as e:
-                print(f"[微信错误] {e}")
-
     def _should_reply(self, message: str) -> bool:
-        """判断是否应该自动回复"""
-        if not self.auto_reply:
+        if not config.WECHAT_AUTO_REPLY_ENABLED:
             return False
         for kw in config.WECHAT_REPLY_KEYWORDS:
             if kw in message:
@@ -204,13 +357,13 @@ class WeChatBot:
         return False
 
     def _reply_to_contact(self, wechat_window, name: str, message: str):
-        """点击联系人并回复消息"""
+        """回复指定联系人"""
         try:
             wechat_window.SetTopmost(True)
             time.sleep(0.3)
 
             search_box = wechat_window.EditControl(Name="搜索")
-            if search_box.Exists():
+            if search_box.Exists(0.5):
                 search_box.Click()
                 time.sleep(0.3)
                 pyperclip.copy(name)
@@ -219,16 +372,19 @@ class WeChatBot:
                 pyautogui.press("enter")
                 time.sleep(1)
 
-            reply = self.brain.generate_reply(name, message)
-            print(f"[自动回复] -> {name}: {reply}")
-            self.push_wechat_msg(name, reply, "out")
+            reply = self.assistant.brain.generate_reply(name, message)
+            print(f"[回复] -> {name}: {reply}")
 
-            self.memory.save_contact(name, "wechat", message)
-            self.memory.save_conversation("user", f"[微信-{name}] {message}", source="wechat")
-            self.memory.save_conversation("assistant", reply, source="wechat")
+            self.assistant.memory.save_contact(name, "wechat", message)
+            self.assistant.memory.save_conversation("user", f"[微信-{name}] {message}", source="wechat")
+            self.assistant.memory.save_conversation("assistant", reply, source="wechat")
+
+            if self.assistant.subtitle:
+                self.assistant.subtitle.push_user(f"[{name}] {message}")
+                self.assistant.subtitle.push_assistant(reply)
 
             edit_box = wechat_window.EditControl(Name="输入信息")
-            if edit_box.Exists():
+            if edit_box.Exists(0.5):
                 edit_box.Click()
                 time.sleep(0.3)
                 pyperclip.copy(reply)
@@ -239,59 +395,6 @@ class WeChatBot:
             wechat_window.SetTopmost(False)
         except Exception as e:
             print(f"[回复失败] {e}")
-            if self.subtitle:
-                self.subtitle.push_status(f"微信回复失败: {e}")
-
-    def _send_message_to_contact(self, contact: str, message: str):
-        """通过微信桌面版发送消息给指定联系人"""
-        if not uia:
-            print(f"[发送] 需要uiautomation: {contact}: {message}")
-            if pyperclip:
-                pyperclip.copy(message)
-            self.push_wechat_msg(contact, message, "out")
-            return
-
-        try:
-            wechat = uia.WindowControl(Name="微信", ClassName="WeChatMainWndForPC")
-            if not wechat.Exists():
-                print("未检测到微信窗口")
-                if self.subtitle:
-                    self.subtitle.push_status("未检测到微信窗口")
-                return
-
-            wechat.SetTopmost(True)
-            time.sleep(0.3)
-
-            search_box = wechat.EditControl(Name="搜索")
-            if search_box.Exists():
-                search_box.Click()
-                time.sleep(0.3)
-                pyperclip.copy(contact)
-                pyautogui.hotkey("ctrl", "v")
-                time.sleep(0.5)
-                pyautogui.press("enter")
-                time.sleep(1)
-
-            edit_box = wechat.EditControl(Name="输入信息")
-            if edit_box.Exists():
-                edit_box.Click()
-                time.sleep(0.3)
-                pyperclip.copy(message)
-                pyautogui.hotkey("ctrl", "v")
-                time.sleep(0.3)
-                pyautogui.press("enter")
-                print(f"[已发送] -> {contact}: {message}")
-                self.push_wechat_msg(contact, message, "out")
-            else:
-                print(f"[发送失败] 未找到输入框")
-                if self.subtitle:
-                    self.subtitle.push_status(f"发送给{contact}失败")
-
-            wechat.SetTopmost(False)
-        except Exception as e:
-            print(f"[发送错误] {e}")
-            if self.subtitle:
-                self.subtitle.push_status(f"发送错误: {e}")
 
     def stop(self):
         self.running = False

@@ -37,7 +37,8 @@ SYSTEM_PROMPT = """你是「李亦禾」，一个像贾维斯一样全能的 AI 
 # ============ 微信自动化配置 ============
 # 需要先在电脑上登录微信桌面版
 WECHAT_APP_PATH = r"C:\Program Files\Tencent\WeChat\WeChat.exe"  # 微信安装路径
-WECHAT_AUTO_REPLY_ENABLED = True   # 是否开启自动回复
+WECHAT_CHAT_TARGET = "文件传输助手"   # 聊天模式目标聊天（可改成任意联系人名）
+WECHAT_AUTO_REPLY_ENABLED = True   # 是否开启自动回复（自动回复模式）
 WECHAT_REPLY_KEYWORDS = ["李亦禾", "助手", "在吗"]  # 触发自动回复的关键词
 
 # ============ QQ 自动化配置 ============

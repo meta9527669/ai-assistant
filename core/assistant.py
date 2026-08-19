@@ -19,7 +19,7 @@ from core.subtitle import SubtitleServer
 class Assistant:
     """李亦禾助手核心调度器"""
 
-    def __init__(self, enable_subtitle=True, enable_wechat=False):
+    def __init__(self, enable_subtitle=True):
         print("正在唤醒李亦禾...")
         self.memory = Memory()
         self.brain = Brain()
@@ -31,7 +31,6 @@ class Assistant:
 
         self.subtitle: SubtitleServer | None = None
         self.mobile_queue: queue.Queue = queue.Queue()
-        self.wechat_bot = None
 
         if enable_subtitle and config.WEB_ENABLED:
             self.subtitle = SubtitleServer(on_message=self._on_mobile_message)
@@ -41,12 +40,6 @@ class Assistant:
                     webbrowser.open(f"http://127.0.0.1:{config.WEB_PORT}/subtitle")
                 except Exception:
                     pass
-
-        if enable_wechat:
-            from platforms.wechat import WeChatBot
-            self.wechat_bot = WeChatBot(self.brain, self.memory, self.subtitle)
-            if self.subtitle:
-                self.subtitle.set_wechat_bot(self.wechat_bot)
 
     def _on_mobile_message(self, text: str):
         """手机/网页发来消息时的回调"""
@@ -137,50 +130,13 @@ class Assistant:
                 self.shutdown()
                 break
 
-    def run_wechat_web_mode(self):
-        """微信 + Web 联动模式：手机控制 + 微信监听 + 桌面字幕"""
-        self.running = True
-        greeting = f"你好主人，我是{config.ASSISTANT_NAME}，微信监听已就绪。"
-        print(f"李亦禾: {greeting}")
-        self.memory.save_conversation("assistant", greeting, source="web")
-        if self.subtitle:
-            self.subtitle.push_assistant(greeting)
-
-        # Start WeChat listener in background thread
-        if self.wechat_bot:
-            wechat_thread = threading.Thread(target=self.wechat_bot.start_listening, daemon=True)
-            wechat_thread.start()
-            if self.subtitle:
-                self.subtitle.push_status("微信监听线程已启动")
-
-        self._start_reminder_loop()
-        print("等待手机/网页消息中...（Ctrl+C 退出）")
-
-        while self.running:
-            try:
-                user_input = self.mobile_queue.get(timeout=1)
-                if not user_input:
-                    continue
-                if user_input in ("退出", "quit", "exit", "再见"):
-                    reply = "好的主人，我去休息了。"
-                    self._say(reply, "web")
-                    self.shutdown()
-                    break
-                self._process_input(user_input, source="web")
-            except queue.Empty:
-                continue
-            except KeyboardInterrupt:
-                self.shutdown()
-                break
-
-    def run_wechat_only(self):
-        """仅启动微信监听模式"""
-        from platforms.wechat import WeChatBot
-        print("启动微信消息监听模式...")
-        bot = self.wechat_bot or WeChatBot(self.brain, self.memory, self.subtitle)
-        if self.subtitle and not self.subtitle.wechat_bot:
-            self.subtitle.set_wechat_bot(bot)
-        bot.start_listening()
+    def run_wechat_only(self, chat_mode=True):
+        """微信模式：通过微信与李亦禾交互"""
+        from platforms.wechat import WeChatInterface
+        mode_desc = "聊天模式（文件传输助手）" if chat_mode else "自动回复模式"
+        print(f"启动微信{mode_desc}...")
+        wechat = WeChatInterface(self, chat_mode=chat_mode)
+        wechat.start()
 
     def run_qq_only(self):
         """仅启动QQ监听模式"""
@@ -231,8 +187,6 @@ class Assistant:
 
     def shutdown(self):
         self.running = False
-        if self.wechat_bot:
-            self.wechat_bot.stop()
         if self.subtitle:
             self.subtitle.push_status("李亦禾已休眠")
             self.subtitle.stop()
