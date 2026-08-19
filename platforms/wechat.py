@@ -49,6 +49,7 @@ class WeChatInterface:
         self._last_msg_text = ""
         self._pending_reply = ""
         self._checked_messages: set = set()
+        self._chat_ready = False  # 聊天是否已打开，避免每次发送都重新搜索
 
     def start(self):
         self._ensure_wechat_open()
@@ -168,10 +169,10 @@ class WeChatInterface:
                     self._process_chat_message(new_msg)
 
                 # 每 30 秒检查窗口是否可见
-                if loop_count % 15 == 0 and not self._is_visible():
+                if loop_count % 60 == 0 and not self._is_visible():
                     self._ensure_visible()
 
-                time.sleep(2)
+                time.sleep(0.5)  # 快速轮询: 0.5秒检测新消息
             except KeyboardInterrupt:
                 farewell = "主人，我要先休息了。微信随时找我哦~"
                 self._send_message(farewell)
@@ -188,18 +189,18 @@ class WeChatInterface:
         """用 uiautomation 控件级操作打开聊天（后台，不抢焦点）"""
         try:
             search = self._wechat_window.EditControl(Name="搜索")
-            if not search.Exists(2, 0.5):
+            if not search.Exists(1, 0.3):
                 print("[微信] 未找到搜索框", flush=True)
                 return False
 
-            # 控件级操作: Click + SendKeys 都不需要窗口在前台
             search.Click()
-            time.sleep(0.3)
-            search.SendKeys("{Ctrl}a{Delete}", waitTime=0.1)
+            time.sleep(0.1)
+            search.SendKeys("{Ctrl}a{Delete}", waitTime=0.05)
             pyperclip.copy(self.target_chat)
-            search.SendKeys("{Ctrl}v", waitTime=2)
-            search.SendKeys("{Enter}", waitTime=2)
+            search.SendKeys("{Ctrl}v", waitTime=0.5)
+            search.SendKeys("{Enter}", waitTime=1)
 
+            self._chat_ready = True
             print(f"[微信] 已打开聊天: {self.target_chat}", flush=True)
             self._last_msg_text = self._read_last_message()
             return True
@@ -211,7 +212,7 @@ class WeChatInterface:
         """读取聊天列表中目标聊天的最后消息预览（完全后台）"""
         try:
             list_ctrl = self._wechat_window.ListControl(Name="会话")
-            if not list_ctrl.Exists(0.5):
+            if not list_ctrl.Exists(0.2):
                 return ""
 
             for item in list_ctrl.GetChildren():
@@ -219,7 +220,7 @@ class WeChatInterface:
                 if not name or self.target_chat not in name:
                     continue
                 msg_item = item.TextControl(foundIndex=3)
-                if msg_item.Exists(0.3):
+                if msg_item.Exists(0.1):
                     return msg_item.Name
             return ""
         except Exception:
@@ -252,11 +253,12 @@ class WeChatInterface:
             self.running = False
             return
 
-        if self.assistant.subtitle:
-            self.assistant.subtitle.push_status("思考中...")
-
+        # 任务指令立即执行，不显示"思考中"
         reply = self.assistant.tasks.try_handle(text)
         if reply is None:
+            # 只有需要 LLM 对话时才显示"思考中"
+            if self.assistant.subtitle:
+                self.assistant.subtitle.push_status("思考中...")
             reply = self.assistant.brain.chat(text)
 
         self._send_and_record(reply)
@@ -269,49 +271,45 @@ class WeChatInterface:
         self._send_message(reply)
 
     def _send_message(self, text: str):
-        """发送消息: 保存前台→打开聊天→获取输入框→发送→恢复前台"""
+        """发送消息: 聊天已打开则直接发送，否则先打开"""
         if not self._wechat_window:
             return
         try:
-            # 1. 保存当前前台窗口
             prev_fg = user32.GetForegroundWindow()
 
-            # 2. 确保窗口可见
             if not self._is_visible():
                 self._ensure_visible()
 
-            # 3. 用控件级操作打开聊天 (不抢焦点)
-            search = self._wechat_window.EditControl(Name="搜索")
-            if search.Exists(1, 0.5):
-                search.Click()
-                time.sleep(0.3)
-                search.SendKeys("{Ctrl}a{Delete}", waitTime=0.1)
-                pyperclip.copy(self.target_chat)
-                search.SendKeys("{Ctrl}v", waitTime=1.5)
-                search.SendKeys("{Enter}", waitTime=1.5)
+            # 如果聊天已打开，跳过搜索步骤直接发送
+            if not self._chat_ready:
+                self._open_target_chat()
 
-            # 4. 获取输入框焦点控件
+            # 获取输入框焦点控件
             input_box = uia.GetFocusedControl()
             if not input_box:
-                print("[微信] 无法获取输入框", flush=True)
-                return
+                # 焦点获取失败，重新打开聊天
+                self._chat_ready = False
+                self._open_target_chat()
+                input_box = uia.GetFocusedControl()
+                if not input_box:
+                    print("[微信] 无法获取输入框", flush=True)
+                    return
 
-            # 5. 发送消息 (CustomControl.SendKeys 会短暂抢焦点)
-            input_box.SendKeys("{Ctrl}a{Delete}", waitTime=0.1)
+            # 发送消息
+            input_box.SendKeys("{Ctrl}a{Delete}", waitTime=0.05)
             pyperclip.copy(text)
-            input_box.SendKeys("{Ctrl}v", waitTime=0.3)
-            input_box.SendKeys("{Enter}", waitTime=0.5)
+            input_box.SendKeys("{Ctrl}v", waitTime=0.1)
+            input_box.SendKeys("{Enter}", waitTime=0.1)
             self._pending_reply = text
 
-            # 6. 立即恢复之前的前台窗口
-            time.sleep(0.1)
+            # 立即恢复前台
             if prev_fg and prev_fg != self._hwnd:
                 user32.SetForegroundWindow(prev_fg)
 
             print("[微信] 消息已发送", flush=True)
         except Exception as e:
             print(f"[微信] 发送失败: {e}", flush=True)
-            # 恢复前台
+            self._chat_ready = False  # 标记需要重新打开
             try:
                 if prev_fg and prev_fg != self._hwnd:
                     user32.SetForegroundWindow(prev_fg)
