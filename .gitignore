@@ -1,0 +1,33 @@
+# 数据文件
+data/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 截图
+*.png
+
+# 日志
+*.log
