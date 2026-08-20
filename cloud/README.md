@@ -1,15 +1,15 @@
 # 云端迷你李亦禾 - 部署指南
 
 ## 功能
-- 手机浏览器访问，电脑关机也能用
+- 手机微信直接对话（电脑关机也能用）
 - 情感对话 (DeepSeek API)
 - 远程开机 (Wake-on-LAN)
 - 备忘/提醒
-- 不需要电脑开机
+- 网页版（浏览器也能用）
 
 ## 部署到 PythonAnywhere (免费)
 
-### 1. 注册
+### 1. 注册 PythonAnywhere
 访问 https://www.pythonanywhere.com 注册免费账号
 
 ### 2. 创建 Web App
@@ -35,30 +35,52 @@ from app import app as application
 ```
 
 ### 6. 修改配置
-- 编辑 `app.py`，确认 API_KEY 和 PC_MAC 正确
+- 编辑 `app.py`，确认:
+  - `API_KEY` (DeepSeek API Key)
+  - `PC_MAC` (电脑MAC地址)
+  - `WECHAT_TOKEN` (与公众号后台一致)
 
-### 7. 访问
-- 浏览器打开 `https://你的用户名.pythonanywhere.com`
-- 手机也可以访问
+### 7. 重新加载
+- Web 标签 → 点击 Reload
+
+## 微信公众号配置
+
+### 注册公众号
+1. 访问 https://mp.weixin.qq.com
+2. 注册「订阅号」(个人免费, 需要身份证)
+3. 注册成功后，进入公众号后台
+
+### 配置服务器
+1. 公众号后台 → 设置与开发 → 基本配置
+2. 找到「服务器配置」→ 点击「修改配置」
+3. 填写:
+   - URL: `https://你的用户名.pythonanywhere.com/wechat`
+   - Token: `liyihe2026` (与 app.py 中 WECHAT_TOKEN 一致)
+   - EncodingAESKey: 随机生成
+   - 消息加解密方式: 明文模式
+4. 点击「提交」(PythonAnywhere 需已部署)
+5. 显示「提交成功」即配置完成
+
+### 使用
+1. 手机微信搜索你的公众号名称并关注
+2. 直接在公众号里发消息
+3. 李亦禾会自动回复
+4. 电脑关机也能用！
 
 ## 远程开机配置
 
 ### 电脑端 WoL 设置
 1. 重启电脑，进入 BIOS/UEFI
-2. 找到 Power Management → Wake-on-LAN → Enable
-3. 找到 Network Boot / PXE → Enable
-4. 保存退出
-
-### Windows 网卡设置
-1. 设备管理器 → 网络适配器 → 属性
-2. 电源管理 → 勾选"允许此设备唤醒计算机"
-3. 高级 → 唤醒功能 → Magic Packet → Enable
+2. Power Management → Wake-on-LAN → Enable
+3. 设备管理器 → 网络适配器 → 属性
+4. 电源管理 → 勾选「允许此设备唤醒计算机」
+5. 高级 → 唤醒魔包 → Enable
 
 ### 路由器端口转发 (外网开机)
-1. 請求转发 UDP 端口 7 和 9 到电脑 IP
-2. 或者: 在路由器上设置静态 ARP 绑定电脑 IP
+- PythonAnywhere 的 WoL 可能被防火墙拦截
+- 建议在路由器上转发 UDP 端口 9 到电脑 IP
+- 或用 ngrok 在电脑开机时暴露本地服务
 
-### 注意
-- 云端 WoL: 需要路由器端口转发，云端发广播包到你的公网IP
-- 同一WiFi WoL: 手机和电脑在同一网络时直接可用
-- 如果免费 PythonAnywhere 不支持 UDP socket，可用 ngrok 在电脑开机时暴露本地服务作为中继
+## 网页版访问
+- 部署完成后，浏览器打开 `https://你的用户名.pythonanywhere.com`
+- 手机也能访问，可添加到桌面作为 PWA

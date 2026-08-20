@@ -2,27 +2,35 @@
 云端迷你李亦禾 - 手机-only 也可使用
 ======================================
 部署到 PythonAnywhere / Railway / Render 等免费平台后，
-手机浏览器访问即可使用，电脑不需要开机。
+手机微信直接对话，电脑不需要开机。
 
 功能：
+  - 微信公众号 API 集成 (手机微信直接对话)
+  - 网页版 (浏览器访问)
   - 情感对话 (DeepSeek API)
   - 远程开机 (WoL)
   - 备忘/提醒
-  - 日记记录
 
 部署方法：
   1. 注册 PythonAnywhere 免费账号
   2. 创建 Flask web app (Python 3.10)
   3. 上传此文件
-  4. 修改下面的 API_KEY 和 MAC 地址
-  5. 访问 https://你的用户名.pythonanywhere.com
+  4. pip install flask requests
+  5. 注册微信公众号 (订阅号), 填入 TOKEN 和 APPID
+  6. 公众号后台 → 设置 → 基本配置 → 服务器配置
+     URL: https://你的用户名.pythonanywhere.com/wechat
+     Token: 与下面 WECHAT_TOKEN 一致
+  7. 手机微信关注公众号, 直接发消息即可对话
 """
 
 import json
 import os
+import re
 import socket
 import struct
 import time
+import hashlib
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional
 
@@ -43,6 +51,10 @@ MODEL = "deepseek-chat"
 
 PC_MAC = "E8-9C-25-82-25-AB"  # 电脑MAC地址
 WOL_BROADCAST = "255.255.255.255"
+
+# 微信公众号配置
+WECHAT_TOKEN = "liyihe2026"  # 公众号后台自定义 Token
+WECHAT_APPID = ""  # 公众号 AppID (注册后在后台查看)
 
 SYSTEM_PROMPT = """你是「李亦禾」，一个像贾维斯一样全能的 AI 私人助手。
 你的性格温暖、幽默、体贴，说话自然亲切，像一位懂你的老朋友。
@@ -106,6 +118,80 @@ def chat_with_llm(user_message: str, history: list) -> str:
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
         return f"连接出了一点小问题: {e}"
+
+# ==================== 消息处理 (共享) ====================
+
+def process_message(user_msg: str) -> str:
+    """处理用户消息，返回回复 (微信和网页共用)"""
+    data = load_data()
+    reply = None
+
+    # 开机
+    if any(kw in user_msg for kw in ['开机', '打开电脑', '启动电脑', '唤醒电脑']):
+        success = wake_on_lan(PC_MAC)
+        reply = f"开机信号已发送！电脑正在启动，等1-2分钟。MAC: {PC_MAC}" if success else "开机信号发送失败，请检查WoL设置或BIOS。"
+
+    # 关机/重启 (需要电脑在线, 云端无法执行)
+    elif any(kw in user_msg for kw in ['关电脑', '关机', '重启电脑']):
+        reply = "主人，电脑关机/重启需要在电脑端操作哦。电脑在线时发微信指令即可。"
+
+    # 记事
+    elif any(kw in user_msg for kw in ['记一下', '备忘']):
+        note = user_msg.replace('记一下', '').replace('备忘', '').strip() or user_msg
+        data['notes'].append({"text": note, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
+        save_data(data)
+        reply = f"已记下来：{note}"
+
+    # 看备忘
+    elif '看备忘' in user_msg or '看看记' in user_msg:
+        notes = data.get('notes', [])
+        if notes:
+            reply = "备忘录:\n" + "\n".join([f"• {n['text']} ({n['time']})" for n in notes[-10:]])
+        else:
+            reply = "还没有备忘记录呢。"
+
+    # 时间
+    elif any(kw in user_msg for kw in ['几点', '时间', '今天几号']):
+        now = datetime.now()
+        reply = f"现在是{now.strftime('%Y年%m月%d日 %H点%M分')}。"
+
+    # LLM 对话
+    else:
+        history = data.get('history', [])
+        reply = chat_with_llm(user_msg, history)
+        data['history'].append({"role": "user", "content": user_msg})
+        data['history'].append({"role": "assistant", "content": reply})
+        if len(data['history']) > 20:
+            data['history'] = data['history'][-20:]
+        save_data(data)
+
+    return reply
+
+# ==================== 微信公众号 API ====================
+
+def verify_wechat_signature(signature, timestamp, nonce):
+    """验证微信公众号签名"""
+    items = sorted([WECHAT_TOKEN, timestamp, nonce])
+    sha1 = hashlib.sha1(''.join(items).encode('utf-8')).hexdigest()
+    return sha1 == signature
+
+def parse_wechat_xml(xml_str):
+    """解析微信消息 XML"""
+    root = ET.fromstring(xml_str)
+    result = {}
+    for child in root:
+        result[child.tag] = child.text or ''
+    return result
+
+def build_wechat_xml(to_user, from_user, content):
+    """生成微信回复 XML"""
+    return f"""<xml>
+<ToUserName><![CDATA[{to_user}]]></ToUserName>
+<FromUserName><![CDATA[{from_user}]]></FromUserName>
+<CreateTime>{int(time.time())}</CreateTime>
+<MsgType><![CDATA[text]]></MsgType>
+<Content><![CDATA[{content}]]></Content>
+</xml>"""
 
 # ==================== Flask App ====================
 
@@ -224,51 +310,51 @@ input.addEventListener('input',()=>{input.style.height='auto';input.style.height
     @app.route('/chat', methods=['POST'])
     def chat():
         user_msg = request.json.get('message', '')
-        data = load_data()
-
-        reply = None
-
-        # 指令: 开机
-        if any(kw in user_msg for kw in ['开机', '打开电脑', '启动电脑', '唤醒电脑']):
-            success = wake_on_lan(PC_MAC)
-            reply = f"开机信号已发送！电脑正在启动，请等1-2分钟。MAC: {PC_MAC}" if success else "开机信号发送失败，请检查WoL设置。"
-
-        # 指令: 记事
-        elif any(kw in user_msg for kw in ['记一下', '备忘']):
-            note = user_msg.replace('记一下', '').replace('备忘', '').strip() or user_msg
-            data['notes'].append({"text": note, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
-            save_data(data)
-            reply = f"已记下来：{note}"
-
-        # 指令: 看备忘
-        elif '备忘' in user_msg or '看看记' in user_msg:
-            notes = data.get('notes', [])
-            if notes:
-                reply = "备忘录:\n" + "\n".join([f"• {n['text']} ({n['time']})" for n in notes[-10:]])
-            else:
-                reply = "还没有备忘记录呢。"
-
-        # 指令: 时间
-        elif any(kw in user_msg for kw in ['几点', '时间']):
-            now = datetime.now()
-            reply = f"现在是{now.strftime('%Y年%m月%d日 %H点%M分')}。"
-
-        # 其他: LLM 对话
-        else:
-            history = data.get('history', [])
-            reply = chat_with_llm(user_msg, history)
-            data['history'].append({"role": "user", "content": user_msg})
-            data['history'].append({"role": "assistant", "content": reply})
-            if len(data['history']) > 20:
-                data['history'] = data['history'][-20:]
-            save_data(data)
-
+        reply = process_message(user_msg)
         return jsonify({"reply": reply, "pc_online": False})
 
     @app.route('/wake', methods=['POST'])
     def wake():
         success = wake_on_lan(PC_MAC)
         return jsonify({"success": success, "mac": PC_MAC})
+
+    # ==================== 微信公众号 API ====================
+
+    @app.route('/wechat', methods=['GET'])
+    def wechat_verify():
+        """微信公众号服务器验证"""
+        signature = request.args.get('signature', '')
+        timestamp = request.args.get('timestamp', '')
+        nonce = request.args.get('nonce', '')
+        echostr = request.args.get('echostr', '')
+
+        if verify_wechat_signature(signature, timestamp, nonce):
+            return echostr
+        return 'Invalid signature', 403
+
+    @app.route('/wechat', methods=['POST'])
+    def wechat_message():
+        """接收微信公众号消息并回复"""
+        try:
+            xml_data = request.data
+            msg = parse_wechat_xml(xml_data)
+
+            # 只处理文本消息
+            if msg.get('MsgType', '') != 'text':
+                reply = "暂时只能处理文字消息哦~"
+            else:
+                user_content = msg.get('Content', '')
+                reply = process_message(user_content)
+
+            # 回复 XML (注意: ToUserName 和 FromUserName 要互换)
+            to_user = msg.get('FromUserName', '')
+            from_user = msg.get('ToUserName', '')
+            xml_reply = build_wechat_xml(to_user, from_user, reply)
+
+            return Response(xml_reply, content_type='application/xml')
+
+        except Exception as e:
+            return f'Error: {e}', 500
 
     if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000)
