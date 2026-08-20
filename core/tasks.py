@@ -52,6 +52,10 @@ class TaskHandler:
         ("关闭电脑", "handle_shutdown"),
         ("关掉电脑", "handle_shutdown"),
         ("关机", "handle_shutdown"),
+        ("开机", "handle_wake_pc"),
+        ("打开电脑", "handle_wake_pc"),
+        ("启动电脑", "handle_wake_pc"),
+        ("唤醒电脑", "handle_wake_pc"),
         ("确认关机", "handle_shutdown_confirm"),
         ("确认重启", "handle_restart_confirm"),
         ("重启电脑", "handle_restart"),
@@ -256,6 +260,11 @@ class TaskHandler:
     def handle_sleep_pc(self, text: str) -> str:
         """电脑休眠: 直接执行"""
         return self.monitor.sleep()
+
+    def handle_wake_pc(self, text: str) -> str:
+        """远程开机: 发送 WoL 魔术包"""
+        from core.wol import wake_pc
+        return wake_pc()
 
     # ====== 系统监控 ======
 
